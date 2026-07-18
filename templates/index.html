@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Outlook Activity Monitor</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f4f6;
+      --card-bg: #ffffff;
+      --text: #111827;
+      --muted: #6b7280;
+      --accent: #0f6cbd;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0f1115; --card-bg: #1a1d23; --text: #f3f4f6; --muted: #9ca3af; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    .card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 2.5rem;
+      max-width: 420px;
+      width: 90%;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+      text-align: center;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p { color: var(--muted); line-height: 1.5; }
+    .btn {
+      display: inline-block;
+      margin-top: 1.5rem;
+      padding: 0.75rem 1.5rem;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      border-radius: 8px;
+      font-weight: 600;
+    }
+    .btn:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Outlook Activity Monitor</h1>
+    <p>Sign in with your Microsoft 365 work account to generate a daily Excel
+       report of your own email activity. Each user only ever sees their own
+       mailbox.</p>
+    <a class="btn" href="/login">Sign in with Microsoft</a>
+  </div>
+</body>
+</html>

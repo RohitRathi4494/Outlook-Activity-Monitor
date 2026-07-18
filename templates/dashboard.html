@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard - Outlook Activity Monitor</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f4f6;
+      --card-bg: #ffffff;
+      --text: #111827;
+      --muted: #6b7280;
+      --accent: #0f6cbd;
+      --border: #e5e7eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0f1115; --card-bg: #1a1d23; --text: #f3f4f6; --muted: #9ca3af; --border: #2b2f38; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    .card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 2.5rem;
+      max-width: 460px;
+      width: 90%;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 0.1rem; }
+    .muted { color: var(--muted); margin-top: 0; }
+    form {
+      margin-top: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      border-top: 1px solid var(--border);
+      padding-top: 1.5rem;
+    }
+    label { font-size: 0.9rem; color: var(--muted); }
+    input[type="date"] {
+      padding: 0.6rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-size: 1rem;
+    }
+    .btn {
+      margin-top: 0.5rem;
+      padding: 0.75rem 1.5rem;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 1rem;
+      cursor: pointer;
+      width: 100%;
+    }
+    .btn:hover { opacity: 0.9; }
+    .logout { display: inline-block; margin-top: 1.5rem; color: var(--muted); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Welcome, {{ user.display_name or user.email }}</h1>
+    <p class="muted">{{ user.email }}</p>
+
+    <form action="/report" method="get">
+      <label for="date">Report date</label>
+      <input type="date" id="date" name="date" value="{{ today }}" max="{{ today }}">
+      <button type="submit" class="btn">Download report</button>
+    </form>
+
+    <a class="logout" href="/logout">Sign out</a>
+  </div>
+</body>
+</html>
