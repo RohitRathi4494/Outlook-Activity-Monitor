@@ -13,8 +13,11 @@ the app never reads (or emails) another user's mailbox.
 - **Auth**: MSAL confidential client, OAuth 2.0 authorization code flow,
   delegated scopes only (`Mail.Read`, `Mail.Send`, `offline_access`,
   `User.Read`). No passwords, no application permissions.
-- **Storage**: SQLite via SQLAlchemy. `User.encrypted_refresh_token` is
-  encrypted at rest with Fernet before it ever touches disk.
+- **Storage**: SQLAlchemy, SQLite by default for local dev. If a
+  `DATABASE_URL` env var is set (e.g. Render's attached Postgres), it's used
+  instead — see [Deploying to Render](#deploying-to-render) below.
+  `User.encrypted_refresh_token` is encrypted at rest with Fernet before it
+  ever touches disk either way.
 - **Collection**: `collector.py` fetches a user's received mail
   (`/me/messages`) and sent mail (`/me/mailFolders/sentitems/messages`),
   paginating through `@odata.nextLink` and retrying on HTTP 429 with
@@ -157,17 +160,57 @@ outlook-activity-monitor/
 └── README.md
 ```
 
-## Deploy notes
+## Deploying to Render
 
-- Set `REDIRECT_URI` (and add a matching Azure Portal redirect URI) to your
-  production HTTPS URL, e.g. `https://yourapp.example.com/auth/callback`.
-- Set `SessionMiddleware(..., https_only=True)` in `main.py` once you're
-  behind HTTPS.
-- Swap SQLite for a managed database (Postgres, etc.) by changing the
-  connection string in `models.py` — the schema and queries are
-  ORM-portable.
-- Run behind a process manager (`uvicorn` with `--workers`, or gunicorn +
-  uvicorn workers) and put a reverse proxy (nginx, Azure App Service, etc.)
-  in front of it for TLS termination.
-- `ENCRYPTION_KEY` and `CLIENT_SECRET` should come from a secrets manager
-  (Azure Key Vault, etc.) in production rather than a plain `.env` file.
+**Why not Vercel:** Vercel only runs code as short-lived serverless
+functions with no persistent disk. This app needs a process that stays
+alive continuously (the 30-minute sync + daily 06:00 report-email jobs in
+`scheduler.py`) and a database that survives between requests and restarts
+— neither works on Vercel. Render's free web service runs a real persistent
+process, which is what this needs.
+
+1. **Push this repo to GitHub** (already done if you're reading this from
+   the repo) and sign up at [render.com](https://render.com) with that
+   GitHub account.
+
+2. **New → Blueprint**, pick this repo. Render reads `render.yaml` in the
+   repo root and provisions:
+   - a free **web service** running `uvicorn main:app --host 0.0.0.0 --port $PORT`
+   - a free **Postgres database**, auto-wired into the web service as
+     `DATABASE_URL` (this is what makes storage survive restarts/redeploys
+     — SQLite would not).
+
+3. **Set the remaining environment variables** on the web service (Render
+   dashboard → your service → Environment), since `render.yaml` intentionally
+   leaves these blank for you to fill in rather than committing them to git:
+   - `CLIENT_ID`, `TENANT_ID`, `CLIENT_SECRET` — from your Entra ID app
+     registration (see step 1 above).
+   - `ENCRYPTION_KEY` — generate with the command in step 2 above (use a
+     **different** key than your local `.env` if you want local and
+     production refresh tokens to be independently encrypted).
+   - `REDIRECT_URI` — Render gives your service a URL like
+     `https://outlook-activity-monitor.onrender.com`; set this to
+     `https://outlook-activity-monitor.onrender.com/auth/callback` (use
+     whatever subdomain Render actually assigned).
+
+4. **Add that same redirect URI in Azure Portal** — App registration →
+   **Authentication** → **Add URI** under the existing Web platform →
+   `https://<your-render-subdomain>.onrender.com/auth/callback` → **Save**.
+   (Keep the `localhost` one too if you still want to run locally.)
+
+5. Render auto-deploys on every push to `main`. Once deployed, `RENDER=true`
+   is set automatically in Render's environment, which the app uses to mark
+   the session cookie `Secure` (see `main.py`) — no manual toggle needed.
+
+**Free tier caveats worth knowing:**
+- Render's free Postgres is deleted after 90 days of the *database's* age
+  unless upgraded to a paid plan — fine for testing, not for indefinite
+  production use. Set a reminder to upgrade before then, or your users'
+  refresh tokens and mail history will be lost.
+- Render's free web service spins down after 15 minutes of no incoming
+  HTTP traffic and takes ~30-60s to wake on the next request. APScheduler
+  jobs only fire while the process is actually running, so the 06:00 daily
+  email and 30-minute sync **will be silently skipped while spun down**,
+  unless something pings the service to keep it awake (e.g. an external
+  uptime monitor hitting it every few minutes) or you upgrade to a paid
+  instance that never sleeps.

@@ -21,8 +21,21 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outlook_activity.db")
-engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+# Render's free web service has no persistent disk, so SQLite would be wiped
+# on every restart/redeploy. When DATABASE_URL is set (e.g. Render's attached
+# Postgres), use that instead; otherwise fall back to a local SQLite file for
+# local development.
+_database_url = os.environ.get("DATABASE_URL")
+if _database_url:
+    # Render/Heroku-style URLs use the legacy "postgres://" scheme; SQLAlchemy's
+    # psycopg2 dialect requires "postgresql://".
+    if _database_url.startswith("postgres://"):
+        _database_url = _database_url.replace("postgres://", "postgresql://", 1)
+    engine = create_engine(_database_url)
+else:
+    DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outlook_activity.db")
+    engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 

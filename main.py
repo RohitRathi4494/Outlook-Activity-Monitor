@@ -47,11 +47,14 @@ app = FastAPI(title="Outlook Activity Monitor")
 # signature, and there's nothing confidential in the payload. We derive the
 # signing secret from ENCRYPTION_KEY so no extra value is needed in .env.
 _session_secret = hashlib.sha256(os.environ["ENCRYPTION_KEY"].encode()).hexdigest()
+# Render sets RENDER=true on its own deployments; only mark the cookie
+# Secure there, so local http://localhost dev still works.
+_IS_PRODUCTION = bool(os.environ.get("RENDER"))
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret,
     session_cookie="oam_session",
-    https_only=False,  # set True when served over HTTPS in production
+    https_only=_IS_PRODUCTION,
 )
 
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
