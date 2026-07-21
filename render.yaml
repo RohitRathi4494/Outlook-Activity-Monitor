@@ -16,6 +16,15 @@ services:
         sync: false
       - key: ENCRYPTION_KEY
         sync: false
+      # Shared secret the GitHub Actions cron presents to trigger /tasks/*.
+      # Set this to the same value stored as the TASK_TRIGGER_TOKEN repo secret.
+      - key: TASK_TRIGGER_TOKEN
+        sync: false
+      # Scheduling is driven by external cron (GitHub Actions), so the
+      # in-process scheduler is turned off here — it can't run on a free
+      # instance that sleeps between requests anyway.
+      - key: ENABLE_INTERNAL_SCHEDULER
+        value: "false"
       - key: DATABASE_URL
         fromDatabase:
           name: outlook-activity-monitor-db

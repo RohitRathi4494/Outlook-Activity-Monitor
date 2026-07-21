@@ -7,6 +7,15 @@ Routes:
   GET  /logout         clear the session
   GET  /dashboard      shows the signed-in user's email + report controls
   GET  /report         download that user's Excel report for a given date
+  GET  /healthz        cheap liveness check (used to warm the service)
+  POST /tasks/sync         run the 30-min mailbox sync for every user
+  POST /tasks/daily-report email every user their previous day's report
+
+The two /tasks/* endpoints exist so scheduling can be driven by an external
+cron (e.g. GitHub Actions) instead of an always-on in-process scheduler —
+this is what lets the app run on a free host that sleeps between requests.
+They are protected by a shared secret (TASK_TRIGGER_TOKEN) sent in the
+X-Task-Token header, so only the cron that holds the token can trigger them.
 
 Every route that needs the current user resolves it strictly from the signed
 session cookie (never from a query/body parameter), and every DB query is
@@ -24,7 +33,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -33,7 +42,7 @@ from auth import build_auth_url, exchange_code_for_user
 from collector import collect_for_user
 from models import SessionLocal, User, init_db
 from report import generate_report
-from scheduler import scheduler, start_scheduler
+from scheduler import poll_all_users, scheduler, send_daily_reports, start_scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("main")
@@ -50,6 +59,16 @@ _session_secret = hashlib.sha256(os.environ["ENCRYPTION_KEY"].encode()).hexdiges
 # Render sets RENDER=true on its own deployments; only mark the cookie
 # Secure there, so local http://localhost dev still works.
 _IS_PRODUCTION = bool(os.environ.get("RENDER"))
+
+# When scheduling is driven by an external cron hitting /tasks/*, the
+# in-process APScheduler is redundant (and useless on a host that sleeps).
+# It stays on by default so local `uvicorn --reload` behaves as before;
+# render.yaml sets this to "false" in production.
+_ENABLE_INTERNAL_SCHEDULER = os.environ.get("ENABLE_INTERNAL_SCHEDULER", "true").lower() == "true"
+
+# Shared secret the external cron must present (X-Task-Token header) to
+# trigger /tasks/*. Left unset -> those endpoints refuse all callers.
+_TASK_TRIGGER_TOKEN = os.environ.get("TASK_TRIGGER_TOKEN")
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret,
@@ -63,7 +82,10 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 @app.on_event("startup")
 def on_startup():
     init_db()
-    start_scheduler()
+    if _ENABLE_INTERNAL_SCHEDULER:
+        start_scheduler()
+    else:
+        logger.info("Internal scheduler disabled; expecting external cron to call /tasks/*.")
 
 
 @app.on_event("shutdown")
@@ -174,3 +196,35 @@ def report(request: Request, date: str | None = None):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/healthz", response_class=PlainTextResponse)
+def healthz():
+    """Cheap liveness endpoint. The external cron hits this first to wake the
+    service (free hosts cold-start in ~30-60s) before triggering a task."""
+    return "ok"
+
+
+def _verify_task_token(token: str | None):
+    """Guard the /tasks/* endpoints. Constant-time compare against the shared
+    secret; refuse outright if no secret is configured on the server."""
+    if not _TASK_TRIGGER_TOKEN:
+        raise HTTPException(status_code=503, detail="Task triggers are not configured.")
+    if not token or not secrets.compare_digest(token, _TASK_TRIGGER_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid or missing task token.")
+
+
+@app.post("/tasks/sync")
+async def task_sync(x_task_token: str | None = Header(default=None)):
+    """Run the mailbox sync for every stored user (the former 30-min job)."""
+    _verify_task_token(x_task_token)
+    await poll_all_users()
+    return {"status": "ok", "task": "sync"}
+
+
+@app.post("/tasks/daily-report")
+async def task_daily_report(x_task_token: str | None = Header(default=None)):
+    """Sync, then email every user their previous day's report (former 06:00 job)."""
+    _verify_task_token(x_task_token)
+    await send_daily_reports()
+    return {"status": "ok", "task": "daily-report"}

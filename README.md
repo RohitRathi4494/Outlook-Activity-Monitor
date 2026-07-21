@@ -160,57 +160,83 @@ outlook-activity-monitor/
 └── README.md
 ```
 
-## Deploying to Render
+## Deploying for free (Render + GitHub Actions cron)
 
-**Why not Vercel:** Vercel only runs code as short-lived serverless
-functions with no persistent disk. This app needs a process that stays
-alive continuously (the 30-minute sync + daily 06:00 report-email jobs in
-`scheduler.py`) and a database that survives between requests and restarts
-— neither works on Vercel. Render's free web service runs a real persistent
-process, which is what this needs.
+**The scheduling problem, and how this is solved for free.** The app's value
+is its automatic work — a 30-minute mailbox sync and a daily report email.
+Every free host (Render, Fly, Koyeb, Cloud Run) *sleeps* the process when no
+HTTP request is arriving, and an in-process scheduler like APScheduler cannot
+fire while asleep. So instead of keeping a process awake 24/7 (which costs
+money), the scheduling is moved **out** of the app:
 
-1. **Push this repo to GitHub** (already done if you're reading this from
-   the repo) and sign up at [render.com](https://render.com) with that
-   GitHub account.
+- The app exposes two token-protected endpoints — `POST /tasks/sync` and
+  `POST /tasks/daily-report` — that run exactly the same work the old
+  `scheduler.py` jobs did.
+- A **GitHub Actions** workflow (`.github/workflows/scheduled-tasks.yml`),
+  which is free, runs on a cron. Each run first hits `/healthz` to wake the
+  sleeping service, then POSTs the trigger. The HTTP request itself is what
+  wakes the host, so the job runs reliably regardless of sleep.
+- The in-process scheduler is turned off in production via
+  `ENABLE_INTERNAL_SCHEDULER=false` (set in `render.yaml`), so nothing runs
+  twice. Locally it stays on, so `uvicorn --reload` behaves as before.
 
-2. **New → Blueprint**, pick this repo. Render reads `render.yaml` in the
-   repo root and provisions:
-   - a free **web service** running `uvicorn main:app --host 0.0.0.0 --port $PORT`
-   - a free **Postgres database**, auto-wired into the web service as
-     `DATABASE_URL` (this is what makes storage survive restarts/redeploys
-     — SQLite would not).
+This keeps the whole thing on free tiers with no credit card and no
+never-sleep instance.
 
-3. **Set the remaining environment variables** on the web service (Render
-   dashboard → your service → Environment), since `render.yaml` intentionally
-   leaves these blank for you to fill in rather than committing them to git:
-   - `CLIENT_ID`, `TENANT_ID`, `CLIENT_SECRET` — from your Entra ID app
-     registration (see step 1 above).
-   - `ENCRYPTION_KEY` — generate with the command in step 2 above (use a
-     **different** key than your local `.env` if you want local and
-     production refresh tokens to be independently encrypted).
-   - `REDIRECT_URI` — Render gives your service a URL like
-     `https://outlook-activity-monitor.onrender.com`; set this to
-     `https://outlook-activity-monitor.onrender.com/auth/callback` (use
-     whatever subdomain Render actually assigned).
+### Step 1 — Deploy the web service on Render
 
-4. **Add that same redirect URI in Azure Portal** — App registration →
-   **Authentication** → **Add URI** under the existing Web platform →
-   `https://<your-render-subdomain>.onrender.com/auth/callback` → **Save**.
-   (Keep the `localhost` one too if you still want to run locally.)
+1. **Push this repo to GitHub** (already done if you're reading this) and
+   sign up at [render.com](https://render.com) with that GitHub account.
+2. **New → Blueprint**, pick this repo. Render reads `render.yaml` and
+   provisions a free **web service** plus a free **Postgres** auto-wired as
+   `DATABASE_URL`.
+3. **Set the environment variables** on the web service (Render dashboard →
+   your service → **Environment**) — `render.yaml` leaves the secrets blank
+   on purpose:
+   - `CLIENT_ID`, `TENANT_ID`, `CLIENT_SECRET` — from the Entra app registration.
+   - `ENCRYPTION_KEY` — generate with the command in section 2 above.
+   - `TASK_TRIGGER_TOKEN` — generate a long random string, e.g.
+     `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Keep it
+     handy; GitHub needs the **same** value in step 3.
+   - `REDIRECT_URI` — Render assigns a URL like
+     `https://outlook-activity-monitor.onrender.com`; set this to that URL
+     with `/auth/callback` appended.
+   - `ENABLE_INTERNAL_SCHEDULER` is already `"false"` from `render.yaml` — leave it.
 
-5. Render auto-deploys on every push to `main`. Once deployed, `RENDER=true`
-   is set automatically in Render's environment, which the app uses to mark
-   the session cookie `Secure` (see `main.py`) — no manual toggle needed.
+### Step 2 — Register the redirect URI in Azure
 
-**Free tier caveats worth knowing:**
-- Render's free Postgres is deleted after 90 days of the *database's* age
-  unless upgraded to a paid plan — fine for testing, not for indefinite
-  production use. Set a reminder to upgrade before then, or your users'
-  refresh tokens and mail history will be lost.
-- Render's free web service spins down after 15 minutes of no incoming
-  HTTP traffic and takes ~30-60s to wake on the next request. APScheduler
-  jobs only fire while the process is actually running, so the 06:00 daily
-  email and 30-minute sync **will be silently skipped while spun down**,
-  unless something pings the service to keep it awake (e.g. an external
-  uptime monitor hitting it every few minutes) or you upgrade to a paid
-  instance that never sleeps.
+App registration → **Authentication** → **Add URI** under the existing Web
+platform → `https://<your-render-subdomain>.onrender.com/auth/callback` →
+**Save**. (Keep the `localhost` one too for local dev.)
+
+### Step 3 — Turn on the free cron (GitHub Actions)
+
+The workflow is already in the repo. Give it the two secrets it needs:
+GitHub repo → **Settings → Secrets and variables → Actions → New repository
+secret**:
+- `APP_URL` — your Render URL, no trailing slash, e.g.
+  `https://outlook-activity-monitor.onrender.com`
+- `TASK_TRIGGER_TOKEN` — the **exact same** value you set on Render in step 1.
+
+The workflow then runs automatically: a sync every 30 minutes and the daily
+report at **00:30 UTC = 06:00 IST**. To test immediately, go to the repo's
+**Actions** tab → **Scheduled tasks** → **Run workflow**, pick `sync` or
+`daily-report`, and run it manually.
+
+> **Note on GitHub Actions minutes:** scheduled workflows are *unlimited and
+> free on public repos*. On a **private** repo they draw from the free
+> 2,000 minutes/month — the every-30-min sync alone is ~1,440 runs/month, so
+> either keep the repo public, lengthen the sync interval in the workflow, or
+> move the frequent sync to [cron-job.org](https://cron-job.org) (also free).
+> Also, GitHub cron can be delayed several minutes under load — fine for this
+> app, but don't expect 06:00:00 to the second.
+
+Render auto-deploys on every push to `main`. Once deployed, `RENDER=true` is
+set automatically, which marks the session cookie `Secure` — no manual toggle.
+
+**One caveat still worth a reminder:** Render's free Postgres is deleted 90
+days after the *database's* creation. For a trial that's fine; before it
+lapses, either upgrade the DB or point `DATABASE_URL` at a free
+[Neon](https://neon.tech) or [Supabase](https://supabase.com) Postgres, which
+don't expire on that clock — otherwise stored refresh tokens and mail history
+are lost.

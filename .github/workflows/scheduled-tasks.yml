@@ -1,0 +1,58 @@
+name: Scheduled tasks
+
+# Drives the app's scheduling from GitHub's free cron instead of an always-on
+# in-process scheduler, so the app can live on a free host that sleeps.
+# Each run wakes the service (/healthz) then POSTs a trigger endpoint.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   APP_URL            e.g. https://outlook-activity-monitor.onrender.com  (no trailing slash)
+#   TASK_TRIGGER_TOKEN the same value set as TASK_TRIGGER_TOKEN on the web service
+#
+# Cron is in UTC. 00:30 UTC = 06:00 IST (Asia/Kolkata, UTC+5:30).
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 min  -> mailbox sync
+    - cron: '30 0 * * *'     # 00:30 UTC / 06:00 IST -> daily report email
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Task to run manually
+        type: choice
+        options:
+          - sync
+          - daily-report
+        default: sync
+
+# Never let two triggers overlap (a slow sync + the daily run colliding).
+concurrency:
+  group: scheduled-tasks
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide which task to run
+        id: which
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            task="${{ github.event.inputs.task }}"
+          elif [ "${{ github.event.schedule }}" = "30 0 * * *" ]; then
+            task="daily-report"
+          else
+            task="sync"
+          fi
+          echo "task=$task" >> "$GITHUB_OUTPUT"
+          echo "Running task: $task"
+
+      - name: Warm up the service
+        run: |
+          curl -fsS --max-time 120 --retry 6 --retry-all-errors --retry-delay 15 \
+            "${{ secrets.APP_URL }}/healthz" || true
+
+      - name: Trigger task
+        run: |
+          curl -fsS -X POST --max-time 600 --retry 3 --retry-all-errors --retry-delay 20 \
+            -H "X-Task-Token: ${{ secrets.TASK_TRIGGER_TOKEN }}" \
+            "${{ secrets.APP_URL }}/tasks/${{ steps.which.outputs.task }}"
