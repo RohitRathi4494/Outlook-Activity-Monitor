@@ -46,10 +46,34 @@ jobs:
           echo "task=$task" >> "$GITHUB_OUTPUT"
           echo "Running task: $task"
 
+      - name: Check required secrets
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          TASK_TRIGGER_TOKEN: ${{ secrets.TASK_TRIGGER_TOKEN }}
+        run: |
+          missing=0
+          # APP_URL must be a non-empty absolute http(s) URL — an empty or
+          # scheme-less value produces a malformed URL that curl rejects with
+          # exit code 3, which is exactly how this job used to fail silently.
+          case "$APP_URL" in
+            http://*|https://*) ;;
+            "") echo "::error::Repository secret APP_URL is not set. Add it under Settings -> Secrets and variables -> Actions (as a Secret, not a Variable), e.g. https://outlook-activity-monitor.onrender.com"; missing=1 ;;
+            *)  echo "::error::Repository secret APP_URL must start with http:// or https:// and have no surrounding quotes/spaces. Got a value that does not."; missing=1 ;;
+          esac
+          if [ -z "$TASK_TRIGGER_TOKEN" ]; then
+            echo "::error::Repository secret TASK_TRIGGER_TOKEN is not set. It must match the TASK_TRIGGER_TOKEN configured on the web service."
+            missing=1
+          fi
+          [ "$missing" = "0" ] || exit 1
+
       - name: Warm up the service
         run: |
+          # Free hosts cold-start in ~30-60s, so a slow first response is
+          # expected; keep retrying but don't fail the job if warm-up alone
+          # doesn't succeed — the Trigger step below is the real gate.
           curl -fsS --max-time 120 --retry 6 --retry-all-errors --retry-delay 15 \
-            "${{ secrets.APP_URL }}/healthz" || true
+            "${{ secrets.APP_URL }}/healthz" \
+            || echo "::warning::Warm-up request to /healthz did not succeed; proceeding to trigger anyway."
 
       - name: Trigger task
         run: |
