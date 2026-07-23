@@ -114,10 +114,11 @@ def _find_matching_forward(received_msg: dict, forward_candidates: list[dict]) -
 
 
 async def collect_for_user(user_id: str) -> int:
-    """Fetch, dedupe, and store new mail activity for a single user.
-    Returns the number of new rows inserted. Silently no-ops (returns 0) if a
-    valid access token cannot be obtained for the user (e.g. they revoked
-    consent) — it does NOT fall back to any other credentials.
+    """Fetch, dedupe, and store new mail activity for a single user, and
+    backfill forward metadata onto already-stored received rows that have since
+    been forwarded. Returns the number of new rows inserted. Silently no-ops
+    (returns 0) if a valid access token cannot be obtained for the user (e.g.
+    they revoked consent) — it does NOT fall back to any other credentials.
     """
     access_token = get_access_token_for_user(user_id)
     if not access_token:
@@ -138,11 +139,15 @@ async def collect_for_user(user_id: str) -> int:
     forward_candidates = [m for m in sent_raw if _is_forward_subject(m.get("subject"))]
 
     inserted = 0
+    updated = 0
     db = SessionLocal()
     try:
-        existing_received_ids = {
-            row.message_id
-            for row in db.query(Message.message_id)
+        # Full received rows (not just ids): a message is often forwarded in a
+        # LATER sync than the one that first stored it, so we must be able to
+        # backfill forward metadata onto rows that already exist.
+        existing_received = {
+            row.message_id: row
+            for row in db.query(Message)
             .filter(Message.user_id == user_id, Message.direction == "received")
             .all()
         }
@@ -154,33 +159,42 @@ async def collect_for_user(user_id: str) -> int:
         }
 
         for m in received_raw:
-            if m["id"] in existing_received_ids:
+            forward = _find_matching_forward(m, forward_candidates)
+            existing = existing_received.get(m["id"])
+
+            if existing is not None:
+                # Row already stored. If it wasn't marked forwarded before but a
+                # forward has since appeared, backfill the forward metadata.
+                # Never un-mark an already-forwarded row.
+                if forward and not existing.forwarded:
+                    existing.forwarded = True
+                    existing.forwarded_to = _format_recipients(forward.get("toRecipients"))
+                    existing.forwarded_time = _parse_graph_datetime(forward.get("sentDateTime"))
+                    updated += 1
                 continue
 
-            forward = _find_matching_forward(m, forward_candidates)
             from_addr = (m.get("from") or {}).get("emailAddress", {}) or {}
 
-            db.add(
-                Message(
-                    user_id=user_id,
-                    message_id=m["id"],
-                    direction="received",
-                    from_name=from_addr.get("name"),
-                    from_email=from_addr.get("address"),
-                    subject=m.get("subject"),
-                    received_datetime=_parse_graph_datetime(m.get("receivedDateTime")),
-                    to_recipients=_format_recipients(m.get("toRecipients")),
-                    cc_recipients=_format_recipients(m.get("ccRecipients")),
-                    has_attachments=bool(m.get("hasAttachments")),
-                    importance=m.get("importance"),
-                    conversation_id=m.get("conversationId"),
-                    internet_message_id=m.get("internetMessageId"),
-                    forwarded=bool(forward),
-                    forwarded_to=_format_recipients(forward.get("toRecipients")) if forward else None,
-                    forwarded_time=_parse_graph_datetime(forward.get("sentDateTime")) if forward else None,
-                )
+            new_row = Message(
+                user_id=user_id,
+                message_id=m["id"],
+                direction="received",
+                from_name=from_addr.get("name"),
+                from_email=from_addr.get("address"),
+                subject=m.get("subject"),
+                received_datetime=_parse_graph_datetime(m.get("receivedDateTime")),
+                to_recipients=_format_recipients(m.get("toRecipients")),
+                cc_recipients=_format_recipients(m.get("ccRecipients")),
+                has_attachments=bool(m.get("hasAttachments")),
+                importance=m.get("importance"),
+                conversation_id=m.get("conversationId"),
+                internet_message_id=m.get("internetMessageId"),
+                forwarded=bool(forward),
+                forwarded_to=_format_recipients(forward.get("toRecipients")) if forward else None,
+                forwarded_time=_parse_graph_datetime(forward.get("sentDateTime")) if forward else None,
             )
-            existing_received_ids.add(m["id"])
+            db.add(new_row)
+            existing_received[m["id"]] = new_row
             inserted += 1
 
         for m in sent_raw:
@@ -216,5 +230,10 @@ async def collect_for_user(user_id: str) -> int:
     finally:
         db.close()
 
-    logger.info("User %s: inserted %d new message row(s).", user_id, inserted)
+    logger.info(
+        "User %s: inserted %d new message row(s), updated %d forward(s).",
+        user_id,
+        inserted,
+        updated,
+    )
     return inserted

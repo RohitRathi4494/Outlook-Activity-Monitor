@@ -3,6 +3,11 @@
 generate_report(user_id, report_date) ONLY ever queries Message rows filtered
 by that user_id — this is the enforcement point for "each user only ever
 sees their own mailbox" on the report-download path.
+
+The report lists only messages the user FORWARDED, and a message appears in a
+given day's report based on the day it was *forwarded* (not received). All
+timestamps are stored in UTC but displayed in IST (India, UTC+5:30), so the
+day window and the shown times both match what the user sees in Outlook.
 """
 
 from datetime import datetime, timedelta
@@ -33,16 +38,23 @@ COLUMNS = [
 MAX_COLUMN_WIDTH = 60
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# Stored timestamps are naive UTC; the tenant is India-based, so reports show
+# local time. IST is a fixed UTC+5:30 offset (no daylight saving).
+IST_OFFSET = timedelta(hours=5, minutes=30)
+
 
 def _fmt_dt(value):
-    return value.strftime(DATETIME_FORMAT) if value else ""
+    """Format a naive-UTC datetime as an IST 'YYYY-MM-DD HH:MM:SS' string."""
+    return (value + IST_OFFSET).strftime(DATETIME_FORMAT) if value else ""
 
 
 def generate_report(user_id: str, report_date: str) -> BytesIO:
     """Build an .xlsx workbook of user_id's received mail for report_date
     (a 'YYYY-MM-DD' string) and return it as an in-memory BytesIO buffer.
     """
-    day_start = datetime.strptime(report_date, "%Y-%m-%d")
+    # report_date names an IST calendar day. Stored forwarded_time is UTC, so
+    # shift the IST midnight boundaries back by the offset to compare in UTC.
+    day_start = datetime.strptime(report_date, "%Y-%m-%d") - IST_OFFSET
     day_end = day_start + timedelta(days=1)
 
     db = SessionLocal()
@@ -52,10 +64,11 @@ def generate_report(user_id: str, report_date: str) -> BytesIO:
             .filter(
                 Message.user_id == user_id,
                 Message.direction == "received",
-                Message.received_datetime >= day_start,
-                Message.received_datetime < day_end,
+                Message.forwarded.is_(True),
+                Message.forwarded_time >= day_start,
+                Message.forwarded_time < day_end,
             )
-            .order_by(Message.received_datetime.asc())
+            .order_by(Message.forwarded_time.asc())
             .all()
         )
 

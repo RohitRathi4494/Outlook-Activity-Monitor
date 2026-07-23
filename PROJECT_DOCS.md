@@ -13,10 +13,12 @@ Outlook/Microsoft account and then:
 1. **Syncs their mailbox** (received + sent mail metadata) from Microsoft Graph
    every 30 minutes.
 2. **Detects forwarded mail** — for each received message it works out whether
-   the user later forwarded it, and to whom.
-3. **Emails the user a daily Excel report** of the previous day's received
-   activity (to their own mailbox), and also lets them download any day's
-   report on demand from a dashboard.
+   the user later forwarded it, to whom, and when.
+3. **Emails the user a daily Excel report** of the mail they **forwarded** the
+   previous day (to their own mailbox), and also lets them download any day's
+   report on demand from a dashboard. The report lists **only forwarded
+   messages**, a message is placed in a day's report by the day it was
+   *forwarded* (not received), and all times are shown in **IST (UTC+5:30)**.
 
 **Strict per-user isolation** is the central design constraint: every Graph
 call uses that user's *own* delegated access token against `/me` endpoints, and
@@ -180,6 +182,12 @@ sign-in and by the 30-min sync):
    + time are stored on the received row.
 4. **Dedupe** against existing `(user_id, message_id, direction)` rows and insert
    only new ones. Commits atomically (rollback on error).
+5. **Backfill forwards:** because a message is usually forwarded in a *later*
+   sync than the one that first stored it, every sync also re-checks existing
+   received rows and, if a matching forward has since appeared, sets
+   `forwarded`/`forwarded_to`/`forwarded_time` on the already-stored row (it
+   never un-marks a row). Without this, forward-dated reports would miss any
+   message forwarded after it was first collected.
 
 `sentDateTime` and `internetMessageHeaders` are only `$select`ed for sent items
 (needed for forward matching).
@@ -189,13 +197,17 @@ sign-in and by the 30-min sync):
 ## 8. Reporting & email (`report.py`, `mailer.py`)
 
 **`report.py::generate_report(user_id, report_date)`** builds an in-memory
-`.xlsx` (BytesIO) of that user's **received** messages for the given day
-(`received_datetime` in `[day_start, day_start+1)`), ordered ascending. Columns:
+`.xlsx` (BytesIO) of the messages that user **forwarded** on the given day.
+`report_date` (`YYYY-MM-DD`) names an **IST calendar day**; the row filter is
+`direction == "received" AND forwarded IS TRUE AND forwarded_time` in that IST
+day (the IST midnight boundaries are shifted back 5:30 to compare against the
+UTC-stored `forwarded_time`), ordered by `forwarded_time` ascending. Columns:
 Received From, Subject, Received Time, To/CC Recipients, Has Attachments,
-Importance, Forwarded (Y/N), Forwarded To, Forwarded Time, Conversation ID,
-Message ID. Header row bold + frozen; columns auto-sized (capped at width 60).
-**Every query is filtered by `user_id`** — the isolation enforcement point on
-the download path.
+Importance, Forwarded (Y/N) *(always Y now)*, Forwarded To, Forwarded Time,
+Conversation ID, Message ID. **`Received Time` and `Forwarded Time` are
+rendered in IST (UTC+5:30).** Header row bold + frozen; columns auto-sized
+(capped at width 60). **Every query is filtered by `user_id`** — the isolation
+enforcement point on the download path.
 
 **`mailer.py::send_daily_report(user_id, email, report_date)`** generates the
 report and sends it as a base64 attachment via Graph
